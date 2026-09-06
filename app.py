@@ -130,27 +130,30 @@ def load_race_data(d: date, venue: str, rno: int, extra_bet_type: str | None):
 # ------------------------------------------------------------
 
 st.set_page_config(page_title="ボートレースAI予測・資金配分", layout="wide")
-
-# --- トップ画面: 締切間近Top5 ---
-st.title("🚤 ボートレースAI予測・資金配分")
-st.subheader("⏰ 締切間近レース Top5（本日）")
-
 today = date.today()
+
+# --- トップ画面: 直近締切レース ---
+st.title("🌸おむらんAI予想🌸")
+st.subheader("直近締切レース")
+st.caption(f"対象日: {today.strftime('%Y-%m-%d')}")
+
 top5, top5_error = load_top5(today)
 if top5_error:
     st.caption(f"⚠️ 締切情報の取得に失敗したためサンプル表示中: {top5_error}")
 
 top5_df = pd.DataFrame([{
-    "開催日": r["開催日"].strftime("%Y-%m-%d"),
     "競走場": r["競走場"],
     "R": f"{r['R']}R",
     "締切時刻": r["締切時刻"].strftime("%H:%M"),
 } for r in top5])
-st.dataframe(top5_df, use_container_width=True, hide_index=True)
+st.dataframe(top5_df[["競走場", "R", "締切時刻"]], use_container_width=True, hide_index=True)
 
 st.divider()
 
-# --- サイドバー: レース選択 ---
+# --- サイドバー: HOME・レース選択 ---
+if st.sidebar.button("🏠 HOME"):
+    st.session_state["loaded"] = False
+
 st.sidebar.header("レース選択")
 race_date = st.sidebar.date_input("開催日", value=today)
 venue = st.sidebar.selectbox("競走場", VENUES, index=VENUES.index("芦屋") if "芦屋" in VENUES else 0)
@@ -226,9 +229,11 @@ with tab_score:
         st.subheader("全舟診断")
         diag = scorer.generate_lane_diagnosis(scored)
         diag_df = pd.DataFrame(diag)
-        if not diag_df.empty:
+        if diag_df.empty:
+            st.info("診断データを生成できませんでした。")
+        else:
             diag_df["枠"] = diag_df["枠"].map(lambda n: f"{LANE_MARKERS.get(n, '')} {n}")
-        st.dataframe(diag_df, use_container_width=True, hide_index=True)
+            st.dataframe(diag_df[["枠", "選手名", "総合スコア", "診断"]], use_container_width=True, hide_index=True)
 
 # ------------------------------------------------------------
 # タブ2: 詳細データ
@@ -236,24 +241,20 @@ with tab_score:
 with tab_detail:
     st.subheader("出走表詳細")
     detail_df = pd.DataFrame(entries)
-    cols = [c for c in ["枠", "選手名", "級別", "全国勝率", "当地勝率", "モーター勝率", "平均ST"] if c in detail_df.columns]
-    if cols:
-        show_df = detail_df[cols].copy()
+    if detail_df.empty:
+        st.warning("出走表データを取得できませんでした。")
+    else:
+        show_df = detail_df[["枠", "選手名", "級別", "全国勝率", "当地勝率", "モーター勝率", "平均ST"]].copy()
         show_df["枠"] = show_df["枠"].map(lambda n: f"{LANE_MARKERS.get(n, '')} {n}")
         st.dataframe(show_df, use_container_width=True, hide_index=True)
-    else:
-        st.warning("出走表データを取得できませんでした。")
 
     st.subheader("気象情報")
-    weather_df = pd.DataFrame([weather]) if weather else pd.DataFrame()
-    if not weather_df.empty:
-        st.dataframe(weather_df, use_container_width=True, hide_index=True)
-    else:
-        st.info("気象情報を取得できませんでした。")
+    weather_df = pd.DataFrame([weather])
+    st.dataframe(weather_df[["気温", "天候", "風速", "水温", "波高"]], use_container_width=True, hide_index=True)
 
     st.subheader("リアルタイムオッズ（3連単・全件）")
     odds_df = pd.DataFrame([{"買い目": k, "オッズ": v} for k, v in odds_3t.items()]).sort_values("買い目")
-    st.dataframe(odds_df, use_container_width=True, hide_index=True)
+    st.dataframe(odds_df[["買い目", "オッズ"]], use_container_width=True, hide_index=True)
 
 # ------------------------------------------------------------
 # タブ3: 資金配分・結果
