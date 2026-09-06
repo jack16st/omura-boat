@@ -150,8 +150,10 @@ st.markdown("""
     }
     h2, h3 {
         color: #16324f !important;
-        border-left: 5px solid #2c5f8a;
-        padding-left: 0.5rem;
+        font-size: clamp(1.1rem, 4.2vw, 1.7rem) !important;
+        font-weight: 700 !important;
+        border-left: none !important;
+        padding-left: 0 !important;
     }
     [data-testid="stMetricValue"] { color: #16324f; }
     section[data-testid="stSidebar"] {
