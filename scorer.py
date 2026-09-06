@@ -129,6 +129,41 @@ def recommend_formation(scored: pd.DataFrame, bet_type: str, top_n: int = 6) -> 
     return formations
 
 
+def format_formation(formations: list[str], bet_type: str) -> str:
+    """フォーメーションを買い目がまとまった表記（例: 1-2-3,4,5）に整形する。"""
+    if not formations:
+        return ""
+
+    if bet_type in ("単勝", "複勝"):
+        return " / ".join(formations)
+
+    sep = "=" if bet_type in ("3連複", "2連複", "拡連複") else "-"
+
+    groups: dict[tuple, list[str]] = {}
+    order: list[tuple] = []
+    for f in formations:
+        parts = f.split(sep)
+        prefix = tuple(parts[:-1])
+        last = parts[-1]
+        if prefix not in groups:
+            groups[prefix] = []
+            order.append(prefix)
+        if last not in groups[prefix]:
+            groups[prefix].append(last)
+
+    lines = []
+    for prefix in order:
+        lasts = groups[prefix]
+        try:
+            lasts = sorted(lasts, key=int)
+        except ValueError:
+            pass
+        prefix_str = sep.join(prefix)
+        lines.append(f"{prefix_str}{sep}{','.join(lasts)}")
+
+    return " / ".join(lines)
+
+
 def generate_lane_diagnosis(scored: pd.DataFrame) -> list[dict]:
     """全舟診断: 艇ごとの簡易診断コメントを生成する（ルールベース）。"""
     if scored.empty:

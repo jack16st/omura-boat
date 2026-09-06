@@ -129,26 +129,39 @@ def load_race_data(d: date, venue: str, rno: int, extra_bet_type: str | None):
 # UI: 共通設定
 # ------------------------------------------------------------
 
-st.set_page_config(page_title="ボートレースAI予測・資金配分", layout="wide")
+st.set_page_config(page_title="おむらんAI予想", layout="wide")
 today = date.today()
 
-# --- トップ画面: 直近締切レース ---
-st.title("🌸おむらんAI予想🌸")
-st.subheader("直近締切レース")
-st.caption(f"対象日: {today.strftime('%Y-%m-%d')}")
+st.markdown("""
+<style>
+    .omuran-title {
+        font-size: clamp(1.4rem, 5vw, 2.2rem);
+        font-weight: 800;
+        color: #12263f;
+        letter-spacing: 0.03em;
+        margin-bottom: 0.1rem;
+        line-height: 1.3;
+    }
+    .omuran-subtitle {
+        color: #4a6fa1;
+        font-size: 0.85rem;
+        margin-top: 0;
+        margin-bottom: 1rem;
+    }
+    h2, h3 {
+        color: #16324f !important;
+        border-left: 5px solid #2c5f8a;
+        padding-left: 0.5rem;
+    }
+    [data-testid="stMetricValue"] { color: #16324f; }
+    section[data-testid="stSidebar"] {
+        background-color: #eef2f7;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-top5, top5_error = load_top5(today)
-if top5_error:
-    st.caption(f"⚠️ 締切情報の取得に失敗したためサンプル表示中: {top5_error}")
-
-top5_df = pd.DataFrame([{
-    "競走場": r["競走場"],
-    "R": f"{r['R']}R",
-    "締切時刻": r["締切時刻"].strftime("%H:%M"),
-} for r in top5])
-st.dataframe(top5_df[["競走場", "R", "締切時刻"]], use_container_width=True, hide_index=True)
-
-st.divider()
+st.markdown('<div class="omuran-title">🌸 おむらんAI予想 🌸</div>', unsafe_allow_html=True)
+st.markdown('<div class="omuran-subtitle">ボートレースAI予測・資金配分</div>', unsafe_allow_html=True)
 
 # --- サイドバー: HOME・レース選択 ---
 if st.sidebar.button("🏠 HOME"):
@@ -172,16 +185,31 @@ else:
 
 fetch_clicked = st.sidebar.button("🔄 データ取得・更新")
 
-st.header(f"{venue} {race_no}R 予測・資金配分")
-
 if "loaded" not in st.session_state:
     st.session_state["loaded"] = False
 if fetch_clicked:
     st.session_state["loaded"] = True
 
+# --- HOME画面: 直近締切レース（予測データ未取得のときだけ表示） ---
 if not st.session_state["loaded"]:
+    st.subheader("直近締切レース")
+    st.caption(f"対象日: {today.strftime('%Y-%m-%d')}")
+
+    top5, top5_error = load_top5(today)
+    if top5_error:
+        st.caption(f"⚠️ 締切情報の取得に失敗したためサンプル表示中: {top5_error}")
+
+    top5_df = pd.DataFrame([{
+        "競走場": r["競走場"],
+        "R": f"{r['R']}R",
+        "締切時刻": r["締切時刻"].strftime("%H:%M"),
+    } for r in top5])
+    st.dataframe(top5_df[["競走場", "R", "締切時刻"]], use_container_width=True, hide_index=True)
+
     st.info("サイドバーの「🔄 データ取得・更新」を押すとレースデータを取得します。")
     st.stop()
+
+st.header(f"{venue} {race_no}R 予測・資金配分")
 
 extra_bet_type = bet_type_choice if is_custom_bet else None
 entries, before_info, odds_3t, odds_custom, result, errors = load_race_data(
@@ -212,11 +240,11 @@ with tab_score:
         st.warning("出走表データを取得できませんでした。")
     else:
         st.subheader("🎯 おすすめフォーメーション（3連単）")
-        st.write(" / ".join(recommend_formation) if recommend_formation else "算出できませんでした")
+        st.write(scorer.format_formation(recommend_formation, RECOMMEND_BET_TYPE) or "算出できませんでした")
 
         if is_custom_bet:
             st.subheader(f"🔧 カスタムフォーメーション（{bet_type_choice}）")
-            st.write(" / ".join(custom_formation) if custom_formation else "算出できませんでした")
+            st.write(scorer.format_formation(custom_formation, bet_type_choice) or "算出できませんでした")
 
         st.subheader("スコアランキング")
         display_df = scored.copy()
