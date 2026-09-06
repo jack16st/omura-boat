@@ -35,3 +35,299 @@ def _mock_entries() -> list[dict]:
     names = ["山田太郎", "佐藤次郎", "鈴木三郎", "高橋四郎", "田中五郎", "伊藤六郎"]
     return [{
         "枠": i + 1, "選手名": names[i], "登録番号": None, "級別": "A1",
+        "全国勝率": [6.8, 5.9, 5.2, 4.8, 5.5, 4.1][i],
+        "当地勝率": [7.1, 5.5, 4.9, 5.0, 5.8, 3.9][i],
+        "モーター勝率": [42.0, 38.5, 35.0, 33.2, 40.1, 30.5][i],
+        "平均ST": [0.14, 0.16, 0.15, 0.18, 0.17, 0.20][i],
+    } for i in range(6)]
+
+
+def _mock_before_info() -> dict:
+    return {
+        "entries": [{"枠": i + 1, "展示タイム": [6.72, 6.78, 6.81, 6.85, 6.75, 6.90][i]} for i in range(6)],
+        "start_courses": {},
+        "weather": {"気温": 20.0, "天候": "晴", "風速": 2.0, "水温": 18.0, "波高": 1.0},
+    }
+
+
+def _mock_odds(bet_type: str) -> dict:
+    if bet_type == "3連単":
+        return {"1-2-3": 3.5, "1-3-2": 5.2, "1-2-4": 8.1, "2-1-3": 12.4, "1-4-2": 15.0, "3-1-2": 22.3}
+    return {"1-2": 2.1, "1-3": 3.0, "1-4": 4.5, "2-3": 6.0, "2-4": 7.2, "3-4": 9.0}
+
+
+def _mock_deadlines(today: date) -> list[dict]:
+    return [
+        {"開催日": today, "競走場": "芦屋", "R": 7, "締切時刻": datetime(today.year, today.month, today.day, 18, 20)},
+        {"開催日": today, "競走場": "丸亀", "R": 6, "締切時刻": datetime(today.year, today.month, today.day, 18, 25)},
+        {"開催日": today, "競走場": "大村", "R": 8, "締切時刻": datetime(today.year, today.month, today.day, 18, 32)},
+        {"開催日": today, "競走場": "若松", "R": 5, "締切時刻": datetime(today.year, today.month, today.day, 18, 40)},
+        {"開催日": today, "競走場": "福岡", "R": 9, "締切時刻": datetime(today.year, today.month, today.day, 18, 48)},
+    ]
+
+
+# ------------------------------------------------------------
+# データ取得（実スクレイピング、失敗時はモックにフォールバック）
+# ------------------------------------------------------------
+
+@st.cache_data(show_spinner=False, ttl=60)
+def load_top5(today: date):
+    try:
+        rows = scraper.fetch_upcoming_deadlines(today, datetime.now())
+        if not rows:
+            raise ValueError("本日の締切前レースが見つかりませんでした")
+        return rows, None
+    except Exception as e:
+        return _mock_deadlines(today), str(e)
+
+
+@st.cache_data(show_spinner=False, ttl=30)
+def load_race_data(d: date, venue: str, rno: int, extra_bet_type: str | None):
+    """おすすめ(3連単)一式に加え、カスタム券種が指定されていればそのオッズも取得する。"""
+    errors = []
+
+    try:
+        entries = scraper.fetch_race_card(d, venue, rno)
+    except Exception as e:
+        errors.append(f"出走表取得エラー: {e}")
+        entries = _mock_entries()
+
+    try:
+        before = scraper.fetch_before_info(d, venue, rno)
+    except Exception as e:
+        errors.append(f"直前情報取得エラー: {e}")
+        before = _mock_before_info()
+
+    try:
+        odds_3t = scraper.fetch_odds(d, venue, rno, RECOMMEND_BET_TYPE)
+        if not odds_3t:
+            raise ValueError("3連単オッズを1件も取得できませんでした")
+    except Exception as e:
+        errors.append(f"3連単オッズ取得エラー: {e}")
+        odds_3t = _mock_odds(RECOMMEND_BET_TYPE)
+
+    odds_custom = None
+    if extra_bet_type and extra_bet_type != RECOMMEND_BET_TYPE:
+        try:
+            odds_custom = scraper.fetch_odds(d, venue, rno, extra_bet_type)
+            if not odds_custom:
+                raise ValueError(f"{extra_bet_type}オッズを1件も取得できませんでした")
+        except Exception as e:
+            errors.append(f"{extra_bet_type}オッズ取得エラー: {e}")
+            odds_custom = _mock_odds(extra_bet_type)
+
+    try:
+        result = scraper.fetch_race_result(d, venue, rno)
+    except Exception as e:
+        errors.append(f"確定結果取得エラー: {e}")
+        result = None
+
+    return entries, before, odds_3t, odds_custom, result, errors
+
+
+# ------------------------------------------------------------
+# UI: 共通設定
+# ------------------------------------------------------------
+
+st.set_page_config(page_title="ボートレースAI予測・資金配分", layout="wide")
+
+# --- トップ画面: 締切間近Top5 ---
+st.title("🚤 ボートレースAI予測・資金配分")
+st.subheader("⏰ 締切間近レース Top5（本日）")
+
+today = date.today()
+top5, top5_error = load_top5(today)
+if top5_error:
+    st.caption(f"⚠️ 締切情報の取得に失敗したためサンプル表示中: {top5_error}")
+
+top5_df = pd.DataFrame([{
+    "開催日": r["開催日"].strftime("%Y-%m-%d"),
+    "競走場": r["競走場"],
+    "R": f"{r['R']}R",
+    "締切時刻": r["締切時刻"].strftime("%H:%M"),
+} for r in top5])
+st.dataframe(top5_df, use_container_width=True, hide_index=True)
+
+st.divider()
+
+# --- サイドバー: レース選択 ---
+st.sidebar.header("レース選択")
+race_date = st.sidebar.date_input("開催日", value=today)
+venue = st.sidebar.selectbox("競走場", VENUES, index=VENUES.index("芦屋") if "芦屋" in VENUES else 0)
+race_no = st.sidebar.selectbox("レース番号", RACE_NUMBERS, format_func=lambda n: f"{n}R")
+
+st.sidebar.header("券種")
+bet_type_choice = st.sidebar.selectbox("券種", BET_TYPE_OPTIONS, index=0)
+is_custom_bet = bet_type_choice != "おすすめ"
+
+st.sidebar.header("予算")
+budget_choice = st.sidebar.radio("予算設定", [f"おすすめ（{RECOMMEND_BUDGET}円）", "カスタム"], index=0)
+if budget_choice == "カスタム":
+    budget = st.sidebar.number_input("予算（円）", min_value=100, step=100, value=3000)
+else:
+    budget = RECOMMEND_BUDGET
+
+fetch_clicked = st.sidebar.button("🔄 データ取得・更新")
+
+st.header(f"{venue} {race_no}R 予測・資金配分")
+
+if "loaded" not in st.session_state:
+    st.session_state["loaded"] = False
+if fetch_clicked:
+    st.session_state["loaded"] = True
+
+if not st.session_state["loaded"]:
+    st.info("サイドバーの「🔄 データ取得・更新」を押すとレースデータを取得します。")
+    st.stop()
+
+extra_bet_type = bet_type_choice if is_custom_bet else None
+entries, before_info, odds_3t, odds_custom, result, errors = load_race_data(
+    race_date, venue, race_no, extra_bet_type
+)
+
+if errors:
+    with st.expander("⚠️ データ取得時のエラー詳細（モックデータで代替表示中の項目があります）"):
+        for e in errors:
+            st.write("- " + e)
+
+tenji_by_lane = {e["枠"]: e.get("展示タイム") for e in before_info.get("entries", []) if e.get("展示タイム")}
+weather = before_info.get("weather", {})
+
+scored = scorer.score_entries(entries, weather=weather, tenji_by_lane=tenji_by_lane)
+recommend_formation = scorer.recommend_formation(scored, RECOMMEND_BET_TYPE) if not scored.empty else []
+custom_formation = (
+    scorer.recommend_formation(scored, bet_type_choice) if (is_custom_bet and not scored.empty) else []
+)
+
+tab_score, tab_detail, tab_money = st.tabs(["① 予測・スコア", "② 詳細データ", "③ 資金配分・結果"])
+
+# ------------------------------------------------------------
+# タブ1: 予測・スコア
+# ------------------------------------------------------------
+with tab_score:
+    if scored.empty:
+        st.warning("出走表データを取得できませんでした。")
+    else:
+        st.subheader("🎯 おすすめフォーメーション（3連単）")
+        st.write(" / ".join(recommend_formation) if recommend_formation else "算出できませんでした")
+
+        if is_custom_bet:
+            st.subheader(f"🔧 カスタムフォーメーション（{bet_type_choice}）")
+            st.write(" / ".join(custom_formation) if custom_formation else "算出できませんでした")
+
+        st.subheader("スコアランキング")
+        display_df = scored.copy()
+        display_df["枠"] = display_df["枠"].map(lambda n: f"{LANE_MARKERS.get(n, '')} {n}")
+        st.dataframe(display_df[["枠", "選手名", "総合スコア"]], use_container_width=True, hide_index=True)
+
+        st.subheader("展開予測")
+        st.write(scorer.generate_race_comment(scored, weather))
+
+        st.subheader("全舟診断")
+        diag = scorer.generate_lane_diagnosis(scored)
+        diag_df = pd.DataFrame(diag)
+        if not diag_df.empty:
+            diag_df["枠"] = diag_df["枠"].map(lambda n: f"{LANE_MARKERS.get(n, '')} {n}")
+        st.dataframe(diag_df, use_container_width=True, hide_index=True)
+
+# ------------------------------------------------------------
+# タブ2: 詳細データ
+# ------------------------------------------------------------
+with tab_detail:
+    st.subheader("出走表詳細")
+    detail_df = pd.DataFrame(entries)
+    cols = [c for c in ["枠", "選手名", "級別", "全国勝率", "当地勝率", "モーター勝率", "平均ST"] if c in detail_df.columns]
+    if cols:
+        show_df = detail_df[cols].copy()
+        show_df["枠"] = show_df["枠"].map(lambda n: f"{LANE_MARKERS.get(n, '')} {n}")
+        st.dataframe(show_df, use_container_width=True, hide_index=True)
+    else:
+        st.warning("出走表データを取得できませんでした。")
+
+    st.subheader("気象情報")
+    weather_df = pd.DataFrame([weather]) if weather else pd.DataFrame()
+    if not weather_df.empty:
+        st.dataframe(weather_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("気象情報を取得できませんでした。")
+
+    st.subheader("リアルタイムオッズ（3連単・全件）")
+    odds_df = pd.DataFrame([{"買い目": k, "オッズ": v} for k, v in odds_3t.items()]).sort_values("買い目")
+    st.dataframe(odds_df, use_container_width=True, hide_index=True)
+
+# ------------------------------------------------------------
+# タブ3: 資金配分・結果
+# ------------------------------------------------------------
+with tab_money:
+    official_combo = None
+    payout_amount = None
+    recovery_rate = None
+    hit = None
+
+    if result is not None:
+        result_entries = result.get("payouts", {}).get(RECOMMEND_BET_TYPE, [])
+        if result_entries:
+            official_combo = result_entries[0]["組番"]
+            settled = settlement.settle(
+                RECOMMEND_BET_TYPE,
+                {c: 100 for c in recommend_formation} if recommend_formation else {},
+                result,
+            )
+            if settled:
+                hit = settled["的中"]
+                recovery_rate = settled["回収率"]
+                payout_amount = settled["払戻金合計"] if hit else None
+
+    if official_combo:
+        if hit:
+            st.success(
+                f"🎯 当たり　{RECOMMEND_BET_TYPE}:{official_combo} ／ "
+                f"金額:{payout_amount:,}円 ／ 回収率:{recovery_rate}%"
+            )
+        else:
+            st.error(
+                f"❌ ハズレ　{RECOMMEND_BET_TYPE}:{official_combo} ／ "
+                f"金額:− ／ 回収率:{recovery_rate if recovery_rate is not None else 0.0}%"
+            )
+    else:
+        st.info("このレースはまだ確定結果が出ていないか、結果を取得できませんでした。")
+
+    st.divider()
+    st.subheader("🎯 おすすめ資金配分（3連単）")
+    target_odds = {c: odds_3t[c] for c in recommend_formation if c in odds_3t} if recommend_formation else {}
+    if not target_odds:
+        st.info("推奨買い目のオッズが取得できませんでした。")
+    else:
+        alloc = allocator.allocate_by_budget(target_odds, budget)
+        alloc_df = pd.DataFrame([
+            {"買い目": k, "オッズ": target_odds[k], "配分金額": v,
+             "的中時払戻": alloc.get("payout_if_hit", {}).get(k)}
+            for k, v in alloc["allocation"].items()
+        ])
+        st.dataframe(alloc_df, use_container_width=True, hide_index=True)
+        if alloc["torigami"]:
+            st.error(f"⚠️ 合成オッズ {alloc['synthetic_odds']} 倍 — トリガミの可能性があります")
+        else:
+            st.success(f"合成オッズ: {alloc['synthetic_odds']} 倍")
+
+    if is_custom_bet:
+        st.divider()
+        st.subheader(f"🔧 カスタム資金配分（{bet_type_choice}）")
+        custom_odds = odds_custom or {}
+        target_custom_odds = (
+            {c: custom_odds[c] for c in custom_formation if c in custom_odds} if custom_formation else {}
+        )
+        if not target_custom_odds:
+            st.info("カスタム買い目のオッズが取得できませんでした。")
+        else:
+            alloc_c = allocator.allocate_by_budget(target_custom_odds, budget)
+            alloc_c_df = pd.DataFrame([
+                {"買い目": k, "オッズ": target_custom_odds[k], "配分金額": v,
+                 "的中時払戻": alloc_c.get("payout_if_hit", {}).get(k)}
+                for k, v in alloc_c["allocation"].items()
+            ])
+            st.dataframe(alloc_c_df, use_container_width=True, hide_index=True)
+            if alloc_c["torigami"]:
+                st.error(f"⚠️ 合成オッズ {alloc_c['synthetic_odds']} 倍 — トリガミの可能性があります")
+            else:
+                st.success(f"合成オッズ: {alloc_c['synthetic_odds']} 倍")
