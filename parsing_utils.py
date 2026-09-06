@@ -1,66 +1,38 @@
 """
-テーブル解析共通ユーティリティ。
-
-boatrace.jp の各ページは rowspan / colspan を多用したテーブルレイアウトのため、
-特定のクラス名に依存せず「テーブル構造そのもの」から値を取り出せるよう、
-rowspan/colspan を展開した2次元グリッドに変換するヘルパーを用意する。
-これにより、サイト側のクラス名変更（スタイル変更）には影響を受けにくくなる一方、
-列の並び順が変わった場合は影響を受けるため、定期的な動作確認は必要。
+ネットワークなしで検証できる範囲のテスト。
+- parsing_utils.table_to_grid: rowspan/colspan展開の正しさ
+- scorer / allocator / settlement: 純粋ロジックの妥当性
+実際のboatrace.jpページ構造そのもの（HTMLソース）は取得できていないため、
+racelist/odds3t/raceresultで確認した「セル内容の並び」を模した簡易HTMLで代替検証する。
 """
 
-from __future__ import annotations
-import re
+from bs4 import BeautifulSoup
+from parsing_utils import table_to_grid
+import scorer
+import allocator
+import settlement
 
 
-def table_to_grid(table_tag) -> list[list[str]]:
-    """BeautifulSoupのtableタグをrowspan/colspan展開済みの2次元テキストグリッドに変換する。"""
-    rows = table_tag.find_all("tr")
-    grid: list[list[str]] = []
-    span_tracker: dict[int, tuple[int, str]] = {}  # col_index -> (残り行数, テキスト)
-
-    for tr in rows:
-        row: list[str] = []
-        col_idx = 0
-        cells = iter(tr.find_all(["td", "th"]))
-        next_cell = next(cells, None)
-
-        while next_cell is not None or col_idx in span_tracker or any(
-            c >= col_idx for c in span_tracker
-        ):
-            if col_idx in span_tracker:
-                remaining, text = span_tracker[col_idx]
-                row.append(text)
-                if remaining - 1 <= 0:
-                    del span_tracker[col_idx]
-                else:
-                    span_tracker[col_idx] = (remaining - 1, text)
-                col_idx += 1
-                continue
-
-            if next_cell is None:
-                break
-
-            text = next_cell.get_text(strip=True)
-            colspan = int(next_cell.get("colspan", 1) or 1)
-            rowspan = int(next_cell.get("rowspan", 1) or 1)
-            for _ in range(colspan):
-                row.append(text)
-                if rowspan > 1:
-                    span_tracker[col_idx] = (rowspan - 1, text)
-                col_idx += 1
-
-            next_cell = next(cells, None)
-
-        grid.append(row)
-
-    return grid
+def test_table_to_grid_rowspan():
+    html = """
+    <table>
+      <tr><td rowspan="2">A</td><td>B1</td></tr>
+      <tr><td>B2</td></tr>
+    </table>
+    """
+    grid = table_to_grid(BeautifulSoup(html, "html.parser").find("table"))
+    assert grid[0] == ["A", "B1"], grid
+    assert grid[1] == ["A", "B2"], grid
+    print("test_table_to_grid_rowspan: OK")
 
 
-def extract_numbers(text: str) -> list[float]:
-    """文字列中の数値（小数含む）をすべて抽出する。"""
-    return [float(x) for x in re.findall(r"-?\d+\.?\d*", text or "")]
-
-
-def first_number(text: str) -> float | None:
-    nums = extract_numbers(text)
-    return nums[0] if nums else None
+def test_racelist_like_grid():
+    # racelist実ページで確認した列並び: 枠, 写真, プロフィール, F/L/ST, 全国, 当地, モーター, ボート
+    def racer_block(lane, toban, name):
+        return f"""
+        <tr>
+          <td rowspan="4">{lane}</td><td rowspan="4"><img></td>
+          <td rowspan="4">{toban} / A1 {name} 三重/三重 36歳/52.5kg</td>
+          <td rowspan="4">F0 L0 0.15</td>
+          <td rowspan="4">6.16 36.15 60.00</td>
+          <td rowspan="4">6.88 49.67 70.59</td>
