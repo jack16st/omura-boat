@@ -144,6 +144,47 @@ def test_allocator_equal_profit():
     print("test_allocator_torigami: OK")
 
 
+def test_diagnosis_and_comment():
+    entries = [
+        {"枠": 1, "選手名": "A", "全国勝率": 7.0, "当地勝率": 7.0, "モーター勝率": 45.0, "平均ST": 0.14},
+        {"枠": 2, "選手名": "B", "全国勝率": 5.0, "当地勝率": 5.0, "モーター勝率": 35.0, "平均ST": 0.16},
+        {"枠": 3, "選手名": "C", "全国勝率": 4.0, "当地勝率": 4.0, "モーター勝率": 30.0, "平均ST": 0.18},
+        {"枠": 4, "選手名": "D", "全国勝率": 4.5, "当地勝率": 4.5, "モーター勝率": 32.0, "平均ST": 0.17},
+        {"枠": 5, "選手名": "E", "全国勝率": 5.5, "当地勝率": 5.5, "モーター勝率": 38.0, "平均ST": 0.15},
+        {"枠": 6, "選手名": "F", "全国勝率": 3.0, "当地勝率": 3.0, "モーター勝率": 25.0, "平均ST": 0.20},
+    ]
+    scored = scorer.score_entries(entries, weather={"風速": 1.0, "波高": 0.0})
+    diag = scorer.generate_lane_diagnosis(scored)
+    assert len(diag) == 6
+    assert all("診断" in d and d["診断"] for d in diag)
+    comment = scorer.generate_race_comment(scored, {"風速": 1.0, "波高": 0.0})
+    assert isinstance(comment, str) and len(comment) > 0
+    print("test_diagnosis_and_comment: OK ->", comment)
+
+
+def test_fetch_upcoming_deadlines():
+    html = """
+    <html><body><table>
+      <tr><td><a href="raceindex?jcd=21&hd=20260906">芦屋</a></td><td>次 7R 18:20発売中</td></tr>
+      <tr><td><a href="raceindex?jcd=15&hd=20260906">丸亀</a></td><td>次 6R 18:05発売中</td></tr>
+      <tr><td><a href="raceindex?jcd=24&hd=20260906">大村</a></td><td>最終Ｒ発売終了</td></tr>
+    </table></body></html>
+    """
+    import scraper
+    original = scraper._fetch_html
+    scraper._fetch_html = lambda path, params: html
+    try:
+        from datetime import date as _date, datetime as _dt
+        rows = scraper.fetch_upcoming_deadlines(_date(2026, 9, 6), _dt(2026, 9, 6, 17, 0), limit=5)
+    finally:
+        scraper._fetch_html = original
+
+    assert len(rows) == 2, rows  # 大村は発売終了のため除外
+    assert rows[0]["競走場"] == "丸亀"  # 18:05の方が先に締切
+    assert rows[1]["競走場"] == "芦屋"
+    print("test_fetch_upcoming_deadlines: OK ->", rows)
+
+
 def test_settlement():
     allocation = {"1-2-4": 1000, "1-3-2": 500}
     result = {"payouts": {"3連単": [{"組番": "1-2-4", "払戻金": 390, "人気": 1}]}}
@@ -164,6 +205,8 @@ if __name__ == "__main__":
     test_fetch_race_card_end_to_end()
     test_odds3t_like_grid()
     test_scorer_basic()
+    test_diagnosis_and_comment()
+    test_fetch_upcoming_deadlines()
     test_allocator_equal_profit()
     test_settlement()
     print("\nALL TESTS PASSED")
