@@ -22,6 +22,7 @@ import scorer
 import allocator
 import settlement
 import history
+from timeutils import now_jst, today_jst
 
 RECOMMEND_BET_TYPE = "3連単"
 BET_TYPE_OPTIONS = ["おすすめ"] + BET_TYPES
@@ -75,7 +76,7 @@ def _mock_deadlines(today: date) -> list[dict]:
 @st.cache_data(show_spinner=False, ttl=60)
 def load_top5(today: date):
     try:
-        rows = scraper.fetch_upcoming_deadlines(today, datetime.now())
+        rows = scraper.fetch_upcoming_deadlines(today, now_jst())
         if not rows:
             raise ValueError("本日の締切前レースが見つかりませんでした")
         return rows, None
@@ -124,7 +125,7 @@ def get_race_data(d: date, venue: str, rno: int, extra_bet_type: str | None, for
             deadline_dt = datetime.fromisoformat(deadline_str)
         except ValueError:
             deadline_dt = None
-    deadline_passed = bool(deadline_dt and datetime.now() >= deadline_dt)
+    deadline_passed = bool(deadline_dt and now_jst() >= deadline_dt)
 
     # 確定結果（保存済みならそれ以上は再取得しない）
     if cached and cached.get("result"):
@@ -180,7 +181,7 @@ def get_race_data(d: date, venue: str, rno: int, extra_bet_type: str | None, for
 # ------------------------------------------------------------
 
 st.set_page_config(page_title="おむらんAI予想", layout="wide")
-today = date.today()
+today = today_jst()
 
 st.markdown("""
 <style>
