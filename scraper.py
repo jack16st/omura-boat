@@ -16,6 +16,7 @@ boatrace.jp の公式ページから出走表・直前情報・オッズ・確�
 from __future__ import annotations
 import re
 import time
+import unicodedata
 from datetime import date
 
 from bs4 import BeautifulSoup
@@ -71,6 +72,11 @@ def _dedupe_lane_rows(rows: list[list[str]]) -> list[list[str]]:
         seen.add(lane)
         deduped.append(r)
     return deduped
+
+
+def _norm(text: str) -> str:
+    """全角数字・全角スペース等を半角に正規化する。"""
+    return unicodedata.normalize("NFKC", text)
 
 
 def _diagnostic_info(soup: BeautifulSoup, html: str) -> str:
@@ -152,7 +158,7 @@ def fetch_before_info(d: date, venue: str, rno: int) -> dict:
     jcd = VENUE_TO_JCD[venue]
     html = _fetch_html("beforeinfo", {"rno": rno, "jcd": jcd, "hd": _date_str(d)})
     soup = BeautifulSoup(html, "html.parser")
-    page_text = soup.get_text(" ", strip=True)
+    page_text = _norm(soup.get_text(" ", strip=True))
 
     _, _, lane_rows = _find_main_table(soup, min_cols=5)
     entries = []
@@ -272,7 +278,7 @@ def _parse_matrix_odds(soup: BeautifulSoup, sep: str) -> dict[str, float]:
 
 def _parse_single_odds(soup: BeautifulSoup) -> dict[str, float]:
     """単勝・複勝ページ用の暫定パーサ（実機構造未検証・要調整）。"""
-    page_text = soup.get_text(" ", strip=True)
+    page_text = _norm(soup.get_text(" ", strip=True))
     result: dict[str, float] = {}
     for m in re.finditer(r"(?<!\d)([1-6])\s+([\d.]+)(?:\s*[-~〜]\s*([\d.]+))?", page_text):
         lane = m.group(1)
@@ -324,13 +330,13 @@ def _parse_payouts(soup: BeautifulSoup) -> dict[str, list[dict]]:
     label_pattern = "|".join(BET_TYPE_LABELS)
 
     for table in soup.find_all("table"):
-        table_text = table.get_text(" ", strip=True)
+        table_text = _norm(table.get_text(" ", strip=True))
         if not any(bt in table_text for bt in BET_TYPE_LABELS):
             continue
 
         current_label = None
         for tr in table.find_all("tr"):
-            text = tr.get_text(" ", strip=True)
+            text = _norm(tr.get_text(" ", strip=True))
             if not text:
                 continue
 
@@ -371,7 +377,7 @@ def fetch_race_result(d: date, venue: str, rno: int) -> dict | None:
     jcd = VENUE_TO_JCD[venue]
     html = _fetch_html("raceresult", {"rno": rno, "jcd": jcd, "hd": _date_str(d)})
     soup = BeautifulSoup(html, "html.parser")
-    page_text = soup.get_text(" ", strip=True)
+    page_text = _norm(soup.get_text(" ", strip=True))
 
     if "まだ確定" in page_text or "発売中" in page_text:
         return None
@@ -424,7 +430,7 @@ def fetch_upcoming_deadlines(d, now: datetime, limit: int = 5) -> list[dict]:
         if not venue:
             continue
 
-        row_text = tr.get_text(" ", strip=True)
+        row_text = _norm(tr.get_text(" ", strip=True))
         m = re.search(r"(\d{1,2})R\D{0,6}(\d{1,2}:\d{2})", row_text)
         if not m:
             continue  # 本日は開催終了・開催なし等

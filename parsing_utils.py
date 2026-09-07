@@ -10,6 +10,7 @@ rowspan/colspan を展開した2次元グリッドに変換するヘルパーを
 
 from __future__ import annotations
 import re
+import unicodedata
 
 
 def table_to_grid(table_tag) -> list[list[str]]:
@@ -41,6 +42,7 @@ def table_to_grid(table_tag) -> list[list[str]]:
                 break
 
             text = next_cell.get_text(" ", strip=True)
+            text = unicodedata.normalize("NFKC", text)
             colspan = int(next_cell.get("colspan", 1) or 1)
             rowspan = int(next_cell.get("rowspan", 1) or 1)
             for _ in range(colspan):
