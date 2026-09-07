@@ -73,6 +73,13 @@ def _dedupe_lane_rows(rows: list[list[str]]) -> list[list[str]]:
     return deduped
 
 
+def _diagnostic_info(soup: BeautifulSoup, html: str) -> str:
+    """パース失敗時に原因の当たりをつけやすくするための簡易診断情報。"""
+    table_count = len(soup.find_all("table"))
+    snippet = soup.get_text(" ", strip=True)[:150]
+    return f"(HTML長:{len(html)} / table数:{table_count} / 冒頭テキスト:「{snippet}」)"
+
+
 def _find_main_table(soup: BeautifulSoup, min_cols: int = 6):
     """本文中のテーブルのうち、先頭列が枠番(1〜6)で始まる行を複数含むテーブルを探す。"""
     candidates = soup.find_all("table")
@@ -96,7 +103,7 @@ def fetch_race_card(d: date, venue: str, rno: int) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
     _, _, lane_rows = _find_main_table(soup, min_cols=8)
     if not lane_rows:
-        raise ValueError("出走表テーブルが見つかりませんでした（サイト構造が変わった可能性）")
+        raise ValueError(f"出走表テーブルが見つかりませんでした（サイト構造が変わった可能性）{_diagnostic_info(soup, html)}")
 
     entries = []
     for row in lane_rows:
@@ -282,21 +289,82 @@ def fetch_odds(d: date, venue: str, rno: int, bet_type: str) -> dict[str, float]
     soup = BeautifulSoup(html, "html.parser")
 
     if bet_type == "3連単":
-        return _parse_grouped_triple_odds(soup, sep="-")
-    if bet_type == "3連複":
-        return _parse_grouped_triple_odds(soup, sep="=")
-    if bet_type == "2連単":
-        return _parse_matrix_odds(soup, sep="-")
-    if bet_type in ("2連複", "拡連複"):
-        return _parse_matrix_odds(soup, sep="=")
-    if bet_type in ("単勝", "複勝"):
-        return _parse_single_odds(soup)
-    raise ValueError(f"未対応の券種: {bet_type}")
+        result = _parse_grouped_triple_odds(soup, sep="-")
+    elif bet_type == "3連複":
+        result = _parse_grouped_triple_odds(soup, sep="=")
+    elif bet_type == "2連単":
+        result = _parse_matrix_odds(soup, sep="-")
+    elif bet_type in ("2連複", "拡連複"):
+        result = _parse_matrix_odds(soup, sep="=")
+    elif bet_type in ("単勝", "複勝"):
+        result = _parse_single_odds(soup)
+    else:
+        raise ValueError(f"未対応の券種: {bet_type}")
+
+    if not result:
+        raise ValueError(f"{bet_type}オッズを1件も取得できませんでした {_diagnostic_info(soup, html)}")
+    return result
 
 
 # ------------------------------------------------------------
 # 確定結果
 # ------------------------------------------------------------
+
+BET_TYPE_LABELS = ["3連単", "3連複", "2連単", "2連複", "拡連複", "単勝", "複勝"]
+
+
+def _parse_payouts(soup: BeautifulSoup) -> dict[str, list[dict]]:
+    """払戻金テーブルを行ごとに正規表現で解析する。
+
+    実機確認済みの構造: 組番は「2」「-」「4」「-」「5」のように数字と区切り記号が
+    個別のセル（またはノード）に分かれており、勝式ラベルは拡連複(3行)・複勝(2行)では
+    rowspanで先頭行にしか出ないため、行をなめながらラベルを引き継ぐ方式で解析する。
+    """
+    payouts: dict[str, list[dict]] = {}
+    label_pattern = "|".join(BET_TYPE_LABELS)
+
+    for table in soup.find_all("table"):
+        table_text = table.get_text(" ", strip=True)
+        if not any(bt in table_text for bt in BET_TYPE_LABELS):
+            continue
+
+        current_label = None
+        for tr in table.find_all("tr"):
+            text = tr.get_text(" ", strip=True)
+            if not text:
+                continue
+
+            label_m = re.match(rf"^({label_pattern})", text)
+            if label_m:
+                current_label = label_m.group(1)
+                rest = text[label_m.end():].strip()
+            else:
+                rest = text
+
+            if current_label is None:
+                continue
+
+            combo_m = re.match(r"^(\d+(?:\s*[-=]\s*\d+)*)", rest)
+            if not combo_m:
+                continue
+            combo = re.sub(r"\s+", "", combo_m.group(1))
+
+            remainder = rest[combo_m.end():].strip()
+            payout_m = re.search(r"¥?\s*([\d,]+)", remainder)
+            if not payout_m:
+                continue
+            payout = int(payout_m.group(1).replace(",", ""))
+
+            after_payout = remainder[payout_m.end():].strip()
+            pop_m = re.match(r"^(\d+)$", after_payout)
+            popularity = int(pop_m.group(1)) if pop_m else None
+
+            payouts.setdefault(current_label, []).append({
+                "組番": combo, "払戻金": payout, "人気": popularity,
+            })
+
+    return payouts
+
 
 def fetch_race_result(d: date, venue: str, rno: int) -> dict | None:
     """確定結果（着順・払戻金・決まり手）を取得する。未確定の場合はNoneを返す。"""
@@ -318,28 +386,7 @@ def fetch_race_result(d: date, venue: str, rno: int) -> dict | None:
                 finish_order.append({"着": r[0], "枠": int(r[1]), "選手": r[2]})
             break
 
-    # 払戻金テーブル: 勝式 / 組番 / 払戻金 / 人気
-    payouts: dict[str, list[dict]] = {}
-    bet_type_names = ["3連単", "3連複", "2連単", "2連複", "拡連複", "単勝", "複勝"]
-    for table in soup.find_all("table"):
-        grid = table_to_grid(table)
-        for row in grid:
-            if not row:
-                continue
-            label = row[0].strip()
-            if label in bet_type_names and len(row) >= 3:
-                combo = row[1].strip()
-                payout_m = re.search(r"[\d,]+", row[2])
-                if not payout_m or not combo:
-                    continue
-                payout = int(payout_m.group(0).replace(",", ""))
-                popularity = None
-                if len(row) >= 4:
-                    pop_m = re.search(r"\d+", row[3])
-                    popularity = int(pop_m.group(0)) if pop_m else None
-                payouts.setdefault(label, []).append({
-                    "組番": combo, "払戻金": payout, "人気": popularity,
-                })
+    payouts = _parse_payouts(soup)
 
     kimarite_m = re.search(r"決まり手\s*([^\s]+)", page_text)
 

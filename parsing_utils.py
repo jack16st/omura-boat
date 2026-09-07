@@ -40,7 +40,7 @@ def table_to_grid(table_tag) -> list[list[str]]:
             if next_cell is None:
                 break
 
-            text = next_cell.get_text(strip=True)
+            text = next_cell.get_text(" ", strip=True)
             colspan = int(next_cell.get("colspan", 1) or 1)
             rowspan = int(next_cell.get("rowspan", 1) or 1)
             for _ in range(colspan):
