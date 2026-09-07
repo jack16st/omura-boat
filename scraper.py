@@ -394,6 +394,10 @@ def fetch_race_result(d: date, venue: str, rno: int) -> dict | None:
 
     payouts = _parse_payouts(soup)
 
+    # 払戻金が1件も取れない場合は「まだ未確定」とみなす（文言判定だけに頼らない安全策）
+    if not payouts:
+        return None
+
     kimarite_m = re.search(r"決まり手\s*([^\s]+)", page_text)
 
     return {

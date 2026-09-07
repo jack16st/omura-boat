@@ -278,12 +278,19 @@ if not st.session_state["loaded"]:
     st.info("サイドバーの「🔄 データ取得・更新」を押すとレースデータを取得します。")
     st.stop()
 
-st.header(f"{venue} {race_no}R 予測・資金配分")
-
 extra_bet_type = bet_type_choice if is_custom_bet else None
 entries, before_info, odds_3t, odds_custom, result, errors, from_cache, deadline_passed = get_race_data(
     race_date, venue, race_no, extra_bet_type, force_refresh
 )
+
+st.header(f"{venue} {race_no}R 予測・資金配分")
+
+deadline_str = before_info.get("締切予定") if isinstance(before_info, dict) else None
+if deadline_str:
+    try:
+        st.caption(f"⏰ 締切予定: {datetime.fromisoformat(deadline_str).strftime('%H:%M')}")
+    except ValueError:
+        pass
 
 status_bits = []
 if from_cache:
