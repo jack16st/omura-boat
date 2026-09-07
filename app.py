@@ -21,6 +21,7 @@ import scraper
 import scorer
 import allocator
 import settlement
+import history
 
 RECOMMEND_BET_TYPE = "3連単"
 BET_TYPE_OPTIONS = ["おすすめ"] + BET_TYPES
@@ -47,6 +48,7 @@ def _mock_before_info() -> dict:
         "entries": [{"枠": i + 1, "展示タイム": [6.72, 6.78, 6.81, 6.85, 6.75, 6.90][i]} for i in range(6)],
         "start_courses": {},
         "weather": {"気温": 20.0, "天候": "晴", "風速": 2.0, "水温": 18.0, "波高": 1.0},
+        "締切予定": None,
     }
 
 
@@ -82,47 +84,95 @@ def load_top5(today: date):
 
 
 @st.cache_data(show_spinner=False, ttl=30)
-def load_race_data(d: date, venue: str, rno: int, extra_bet_type: str | None):
-    """おすすめ(3連単)一式に加え、カスタム券種が指定されていればそのオッズも取得する。"""
-    errors = []
-
+def _fetch_odds_live(d: date, venue: str, rno: int, bet_type: str, fallback: dict | None):
     try:
-        entries = scraper.fetch_race_card(d, venue, rno)
+        odds = scraper.fetch_odds(d, venue, rno, bet_type)
+        if not odds:
+            raise ValueError(f"{bet_type}オッズを1件も取得できませんでした")
+        return odds, None
     except Exception as e:
-        errors.append(f"出走表取得エラー: {e}")
-        entries = _mock_entries()
+        return (fallback or _mock_odds(bet_type)), f"{bet_type}オッズ取得エラー: {e}"
 
-    try:
-        before = scraper.fetch_before_info(d, venue, rno)
-    except Exception as e:
-        errors.append(f"直前情報取得エラー: {e}")
-        before = _mock_before_info()
 
-    try:
-        odds_3t = scraper.fetch_odds(d, venue, rno, RECOMMEND_BET_TYPE)
-        if not odds_3t:
-            raise ValueError("3連単オッズを1件も取得できませんでした")
-    except Exception as e:
-        errors.append(f"3連単オッズ取得エラー: {e}")
-        odds_3t = _mock_odds(RECOMMEND_BET_TYPE)
+def get_race_data(d: date, venue: str, rno: int, extra_bet_type: str | None, force_refresh: bool):
+    """出走表・直前情報は保存済みなら再利用。オッズは締切前は毎回最新を取得し、
+    締切通過後または結果確定後は固定値として以後は再取得しない。"""
+    errors: list[str] = []
+    cached = None if force_refresh else history.load_prediction(d, venue, rno)
+    from_cache = cached is not None
+
+    if cached:
+        entries = cached["entries"]
+        before_info = cached["before_info"]
+    else:
+        try:
+            entries = scraper.fetch_race_card(d, venue, rno)
+        except Exception as e:
+            errors.append(f"出走表取得エラー: {e}")
+            entries = _mock_entries()
+        try:
+            before_info = scraper.fetch_before_info(d, venue, rno)
+        except Exception as e:
+            errors.append(f"直前情報取得エラー: {e}")
+            before_info = _mock_before_info()
+
+    # 締切判定（このレース固有の締切予定時刻と現在時刻を比較）
+    deadline_dt = None
+    deadline_str = before_info.get("締切予定") if isinstance(before_info, dict) else None
+    if deadline_str:
+        try:
+            deadline_dt = datetime.fromisoformat(deadline_str)
+        except ValueError:
+            deadline_dt = None
+    deadline_passed = bool(deadline_dt and datetime.now() >= deadline_dt)
+
+    # 確定結果（保存済みならそれ以上は再取得しない）
+    if cached and cached.get("result"):
+        result = cached["result"]
+    else:
+        try:
+            result = scraper.fetch_race_result(d, venue, rno)
+        except Exception as e:
+            errors.append(f"確定結果取得エラー: {e}")
+            result = None
+    settled = result is not None
+
+    # オッズ: 確定済み、または締切通過後にロック済みキャッシュがあれば再取得しない
+    odds_locked_cached = bool(cached and cached.get("odds_locked"))
+    if (settled or odds_locked_cached) and cached and cached.get("odds_3t"):
+        odds_3t = cached["odds_3t"]
+    else:
+        odds_3t, err = _fetch_odds_live(d, venue, rno, RECOMMEND_BET_TYPE, cached.get("odds_3t") if cached else None)
+        if err:
+            errors.append(err)
 
     odds_custom = None
     if extra_bet_type and extra_bet_type != RECOMMEND_BET_TYPE:
-        try:
-            odds_custom = scraper.fetch_odds(d, venue, rno, extra_bet_type)
-            if not odds_custom:
-                raise ValueError(f"{extra_bet_type}オッズを1件も取得できませんでした")
-        except Exception as e:
-            errors.append(f"{extra_bet_type}オッズ取得エラー: {e}")
-            odds_custom = _mock_odds(extra_bet_type)
+        cached_custom = cached.get("odds_custom") if (cached and cached.get("bet_type_choice") == extra_bet_type) else None
+        if (settled or odds_locked_cached) and cached_custom:
+            odds_custom = cached_custom
+        else:
+            odds_custom, err = _fetch_odds_live(d, venue, rno, extra_bet_type, cached_custom)
+            if err:
+                errors.append(err)
 
-    try:
-        result = scraper.fetch_race_result(d, venue, rno)
-    except Exception as e:
-        errors.append(f"確定結果取得エラー: {e}")
-        result = None
+    should_lock_now = (settled or deadline_passed) and not odds_locked_cached
 
-    return entries, before, odds_3t, odds_custom, result, errors
+    if not cached:
+        history.save_prediction(
+            d, venue, rno,
+            bet_type_choice=extra_bet_type or RECOMMEND_BET_TYPE,
+            entries=entries, before_info=before_info,
+            odds_3t=odds_3t, odds_custom=odds_custom, result=result,
+            odds_locked=(settled or deadline_passed),
+        )
+    else:
+        if result and not cached.get("result"):
+            history.update_result(d, venue, rno, result)
+        if should_lock_now:
+            history.update_odds(d, venue, rno, odds_3t, odds_custom, True)
+
+    return entries, before_info, odds_3t, odds_custom, result, errors, from_cache, deadline_passed
 
 
 # ------------------------------------------------------------
@@ -186,6 +236,7 @@ else:
     budget = RECOMMEND_BUDGET
 
 fetch_clicked = st.sidebar.button("🔄 データ取得・更新")
+force_refresh = st.sidebar.checkbox("出走表・直前情報も強制的に再取得する", value=False)
 
 if "loaded" not in st.session_state:
     st.session_state["loaded"] = False
@@ -214,9 +265,19 @@ if not st.session_state["loaded"]:
 st.header(f"{venue} {race_no}R 予測・資金配分")
 
 extra_bet_type = bet_type_choice if is_custom_bet else None
-entries, before_info, odds_3t, odds_custom, result, errors = load_race_data(
-    race_date, venue, race_no, extra_bet_type
+entries, before_info, odds_3t, odds_custom, result, errors, from_cache, deadline_passed = get_race_data(
+    race_date, venue, race_no, extra_bet_type, force_refresh
 )
+
+status_bits = []
+if from_cache:
+    status_bits.append("📦 出走表・直前情報は保存済みデータを使用中")
+if result is not None:
+    status_bits.append("✅ 結果確定済み（オッズは再取得しません）")
+elif deadline_passed:
+    status_bits.append("⏰ 締切通過（オッズは固定値としてキャッシュしました）")
+if status_bits:
+    st.caption(" ／ ".join(status_bits))
 
 if errors:
     with st.expander("⚠️ データ取得時のエラー詳細（モックデータで代替表示中の項目があります）"):

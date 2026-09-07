@@ -187,7 +187,20 @@ def fetch_before_info(d: date, venue: str, rno: int) -> dict:
         "波高": float(wave_m.group(1)) if wave_m else 0.0,
     }
 
-    return {"entries": entries, "start_courses": start_courses, "weather": weather}
+    # 締切予定時刻（このレース単独の締切。JSON保存のためISO文字列で持つ）
+    deadline_m = re.search(r"締切予定\s*(\d{1,2}):(\d{2})", page_text)
+    deadline_iso = None
+    if deadline_m:
+        hh, mm = int(deadline_m.group(1)), int(deadline_m.group(2))
+        try:
+            deadline_iso = datetime(d.year, d.month, d.day, hh, mm).isoformat()
+        except ValueError:
+            deadline_iso = None
+
+    return {
+        "entries": entries, "start_courses": start_courses, "weather": weather,
+        "締切予定": deadline_iso,
+    }
 
 
 # ------------------------------------------------------------
