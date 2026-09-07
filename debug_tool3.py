@@ -44,6 +44,11 @@ if st.button("出走表ページを取得して生HTMLを確認する"):
                     p = m.start()
                     st.code(html[p:p + 1000], language="html")
 
+                st.markdown("#### <tbody>タグ以降（実データ行）先頭2件・各2000文字")
+                for m in list(re.finditer(r"<tbody", html))[:2]:
+                    p = m.start()
+                    st.code(html[p:p + 2000], language="html")
+
                 st.markdown("#### class属性の出現頻度トップ30（構造推定用）")
                 classes = re.findall(r'class="([^"]+)"', html)
                 from collections import Counter
