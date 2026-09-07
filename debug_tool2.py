@@ -15,6 +15,7 @@ PAGES = {
     "出走表 (racelist)": "racelist",
     "直前情報 (beforeinfo)": "beforeinfo",
     "3連単オッズ (odds3t)": "odds3t",
+    "本日のレース (index)": "index",
 }
 
 col_track, col_race = st.columns(2)

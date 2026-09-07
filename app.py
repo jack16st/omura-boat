@@ -97,10 +97,14 @@ def _fetch_odds_live(d: date, venue: str, rno: int, bet_type: str, fallback: dic
 
 def get_race_data(d: date, venue: str, rno: int, extra_bet_type: str | None, force_refresh: bool):
     """出走表・直前情報は保存済みなら再利用。オッズは締切前は毎回最新を取得し、
-    締切通過後または結果確定後は固定値として以後は再取得しない。"""
+    締切通過後または結果確定後は固定値として以後は再取得しない。
+    スクレイピングに失敗してモックデータで代替した場合はDBに保存しない（次回また本物を取りに行く）。"""
     errors: list[str] = []
     cached = None if force_refresh else history.load_prediction(d, venue, rno)
     from_cache = cached is not None
+
+    entries_is_real = True
+    before_is_real = True
 
     if cached:
         entries = cached["entries"]
@@ -111,11 +115,13 @@ def get_race_data(d: date, venue: str, rno: int, extra_bet_type: str | None, for
         except Exception as e:
             errors.append(f"出走表取得エラー: {e}")
             entries = _mock_entries()
+            entries_is_real = False
         try:
             before_info = scraper.fetch_before_info(d, venue, rno)
         except Exception as e:
             errors.append(f"直前情報取得エラー: {e}")
             before_info = _mock_before_info()
+            before_is_real = False
 
     # 締切判定（このレース固有の締切予定時刻と現在時刻を比較）
     deadline_dt = None
@@ -140,14 +146,17 @@ def get_race_data(d: date, venue: str, rno: int, extra_bet_type: str | None, for
 
     # オッズ: 確定済み、または締切通過後にロック済みキャッシュがあれば再取得しない
     odds_locked_cached = bool(cached and cached.get("odds_locked"))
+    odds_3t_is_real = True
     if (settled or odds_locked_cached) and cached and cached.get("odds_3t"):
         odds_3t = cached["odds_3t"]
     else:
         odds_3t, err = _fetch_odds_live(d, venue, rno, RECOMMEND_BET_TYPE, cached.get("odds_3t") if cached else None)
         if err:
             errors.append(err)
+            odds_3t_is_real = False
 
     odds_custom = None
+    odds_custom_is_real = True
     if extra_bet_type and extra_bet_type != RECOMMEND_BET_TYPE:
         cached_custom = cached.get("odds_custom") if (cached and cached.get("bet_type_choice") == extra_bet_type) else None
         if (settled or odds_locked_cached) and cached_custom:
@@ -156,21 +165,27 @@ def get_race_data(d: date, venue: str, rno: int, extra_bet_type: str | None, for
             odds_custom, err = _fetch_odds_live(d, venue, rno, extra_bet_type, cached_custom)
             if err:
                 errors.append(err)
+                odds_custom_is_real = False
 
     should_lock_now = (settled or deadline_passed) and not odds_locked_cached
 
     if not cached:
-        history.save_prediction(
-            d, venue, rno,
-            bet_type_choice=extra_bet_type or RECOMMEND_BET_TYPE,
-            entries=entries, before_info=before_info,
-            odds_3t=odds_3t, odds_custom=odds_custom, result=result,
-            odds_locked=(settled or deadline_passed),
-        )
+        # 出走表・直前情報が両方とも本物のスクレイピング結果のときだけ保存する。
+        # モックで代替した場合は保存せず、次回アクセス時に再度スクレイピングを試みる。
+        if entries_is_real and before_is_real:
+            history.save_prediction(
+                d, venue, rno,
+                bet_type_choice=extra_bet_type or RECOMMEND_BET_TYPE,
+                entries=entries, before_info=before_info,
+                odds_3t=odds_3t if odds_3t_is_real else {},
+                odds_custom=(odds_custom if odds_custom_is_real else None),
+                result=result,
+                odds_locked=bool((settled or deadline_passed) and odds_3t_is_real),
+            )
     else:
         if result and not cached.get("result"):
             history.update_result(d, venue, rno, result)
-        if should_lock_now:
+        if should_lock_now and odds_3t_is_real and odds_custom_is_real:
             history.update_odds(d, venue, rno, odds_3t, odds_custom, True)
 
     return entries, before_info, odds_3t, odds_custom, result, errors, from_cache, deadline_passed
