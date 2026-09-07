@@ -149,6 +149,28 @@ def fetch_race_card(d: date, venue: str, rno: int) -> list[dict]:
     return entries
 
 
+def fetch_race_deadline(d: date, venue: str, rno: int) -> str | None:
+    """出走表ページの「締切予定時刻」行（12レース分が1行にまとまっている）から
+    該当レースの締切時刻を抽出してISO文字列で返す。見つからなければNone。"""
+    jcd = VENUE_TO_JCD[venue]
+    html = _fetch_html("racelist", {"rno": rno, "jcd": jcd, "hd": _date_str(d)})
+    soup = BeautifulSoup(html, "html.parser")
+    page_text = _norm(soup.get_text(" ", strip=True))
+
+    m = re.search(r"締切予定時刻((?:\s*\d{1,2}:\d{2}){1,12})", page_text)
+    if not m:
+        return None
+    times = re.findall(r"\d{1,2}:\d{2}", m.group(1))
+    idx = rno - 1
+    if idx < 0 or idx >= len(times):
+        return None
+    hh, mm = map(int, times[idx].split(":"))
+    try:
+        return datetime(d.year, d.month, d.day, hh, mm).isoformat()
+    except ValueError:
+        return None
+
+
 # ------------------------------------------------------------
 # 直前情報
 # ------------------------------------------------------------

@@ -123,6 +123,14 @@ def get_race_data(d: date, venue: str, rno: int, extra_bet_type: str | None, for
             before_info = _mock_before_info()
             before_is_real = False
 
+        if entries_is_real and not before_info.get("締切予定"):
+            try:
+                deadline_iso = scraper.fetch_race_deadline(d, venue, rno)
+                if deadline_iso:
+                    before_info["締切予定"] = deadline_iso
+            except Exception as e:
+                errors.append(f"締切時刻取得エラー: {e}")
+
     # 締切判定（このレース固有の締切予定時刻と現在時刻を比較）
     deadline_dt = None
     deadline_str = before_info.get("締切予定") if isinstance(before_info, dict) else None
