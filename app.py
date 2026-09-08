@@ -30,58 +30,16 @@ RECOMMEND_BUDGET = 1000
 
 
 # ------------------------------------------------------------
-# モックデータ（スクレイピング失敗時のフォールバック）
-# ------------------------------------------------------------
-
-def _mock_entries() -> list[dict]:
-    names = ["山田太郎", "佐藤次郎", "鈴木三郎", "高橋四郎", "田中五郎", "伊藤六郎"]
-    return [{
-        "枠": i + 1, "選手名": names[i], "登録番号": None, "級別": "A1",
-        "全国勝率": [6.8, 5.9, 5.2, 4.8, 5.5, 4.1][i],
-        "当地勝率": [7.1, 5.5, 4.9, 5.0, 5.8, 3.9][i],
-        "モーター勝率": [42.0, 38.5, 35.0, 33.2, 40.1, 30.5][i],
-        "平均ST": [0.14, 0.16, 0.15, 0.18, 0.17, 0.20][i],
-    } for i in range(6)]
-
-
-def _mock_before_info() -> dict:
-    return {
-        "entries": [{"枠": i + 1, "展示タイム": [6.72, 6.78, 6.81, 6.85, 6.75, 6.90][i]} for i in range(6)],
-        "start_courses": {},
-        "weather": {"気温": 20.0, "天候": "晴", "風速": 2.0, "水温": 18.0, "波高": 1.0},
-        "締切予定": None,
-    }
-
-
-def _mock_odds(bet_type: str) -> dict:
-    if bet_type == "3連単":
-        return {"1-2-3": 3.5, "1-3-2": 5.2, "1-2-4": 8.1, "2-1-3": 12.4, "1-4-2": 15.0, "3-1-2": 22.3}
-    return {"1-2": 2.1, "1-3": 3.0, "1-4": 4.5, "2-3": 6.0, "2-4": 7.2, "3-4": 9.0}
-
-
-def _mock_deadlines(today: date) -> list[dict]:
-    return [
-        {"開催日": today, "競走場": "芦屋", "R": 7, "締切時刻": datetime(today.year, today.month, today.day, 18, 20)},
-        {"開催日": today, "競走場": "丸亀", "R": 6, "締切時刻": datetime(today.year, today.month, today.day, 18, 25)},
-        {"開催日": today, "競走場": "大村", "R": 8, "締切時刻": datetime(today.year, today.month, today.day, 18, 32)},
-        {"開催日": today, "競走場": "若松", "R": 5, "締切時刻": datetime(today.year, today.month, today.day, 18, 40)},
-        {"開催日": today, "競走場": "福岡", "R": 9, "締切時刻": datetime(today.year, today.month, today.day, 18, 48)},
-    ]
-
-
-# ------------------------------------------------------------
-# データ取得（実スクレイピング、失敗時はモックにフォールバック）
+# データ取得（実スクレイピングのみ。失敗時はエラー表示し、サンプルデータでは代替しない）
 # ------------------------------------------------------------
 
 @st.cache_data(show_spinner=False, ttl=60)
 def load_top5(today: date):
     try:
         rows = scraper.fetch_upcoming_deadlines(today, now_jst())
-        if not rows:
-            raise ValueError("本日の締切前レースが見つかりませんでした")
-        return rows, None
-    except Exception as e:
-        return _mock_deadlines(today), str(e)
+        return rows or None
+    except Exception:
+        return None
 
 
 @st.cache_data(show_spinner=False, ttl=30)
@@ -92,7 +50,7 @@ def _fetch_odds_live(d: date, venue: str, rno: int, bet_type: str, fallback: dic
             raise ValueError(f"{bet_type}オッズを1件も取得できませんでした")
         return odds, None
     except Exception as e:
-        return (fallback or _mock_odds(bet_type)), f"{bet_type}オッズ取得エラー: {e}"
+        return (fallback or {}), f"{bet_type}オッズ取得エラー: {e}"
 
 
 def get_race_data(d: date, venue: str, rno: int, extra_bet_type: str | None, force_refresh: bool):
@@ -114,13 +72,13 @@ def get_race_data(d: date, venue: str, rno: int, extra_bet_type: str | None, for
             entries = scraper.fetch_race_card(d, venue, rno)
         except Exception as e:
             errors.append(f"出走表取得エラー: {e}")
-            entries = _mock_entries()
+            entries = []
             entries_is_real = False
         try:
             before_info = scraper.fetch_before_info(d, venue, rno)
         except Exception as e:
             errors.append(f"直前情報取得エラー: {e}")
-            before_info = _mock_before_info()
+            before_info = {}
             before_is_real = False
 
         if entries_is_real and not before_info.get("締切予定"):
@@ -269,19 +227,16 @@ if fetch_clicked:
 
 # --- HOME画面: 直近締切レース（予測データ未取得のときだけ表示） ---
 if not st.session_state["loaded"]:
-    st.subheader("直近締切レース")
-    st.caption(f"対象日: {today.strftime('%Y-%m-%d')}")
-
-    top5, top5_error = load_top5(today)
-    if top5_error:
-        st.caption(f"⚠️ 締切情報の取得に失敗したためサンプル表示中: {top5_error}")
-
-    top5_df = pd.DataFrame([{
-        "競走場": r["競走場"],
-        "R": f"{r['R']}R",
-        "締切時刻": r["締切時刻"].strftime("%H:%M"),
-    } for r in top5])
-    st.dataframe(top5_df[["競走場", "R", "締切時刻"]], use_container_width=True, hide_index=True)
+    top5 = load_top5(today)
+    if top5:
+        st.subheader("直近締切レース")
+        st.caption(f"対象日: {today.strftime('%Y-%m-%d')}")
+        top5_df = pd.DataFrame([{
+            "競走場": r["競走場"],
+            "R": f"{r['R']}R",
+            "締切時刻": r["締切時刻"].strftime("%H:%M"),
+        } for r in top5])
+        st.dataframe(top5_df[["競走場", "R", "締切時刻"]], use_container_width=True, hide_index=True)
 
     st.info("サイドバーの「🔄 データ取得・更新」を押すとレースデータを取得します。")
     st.stop()
@@ -311,7 +266,7 @@ if status_bits:
     st.caption(" ／ ".join(status_bits))
 
 if errors:
-    with st.expander("⚠️ データ取得時のエラー詳細（モックデータで代替表示中の項目があります）"):
+    with st.expander("⚠️ データ取得時のエラー詳細"):
         for e in errors:
             st.write("- " + e)
 
@@ -371,12 +326,19 @@ with tab_detail:
         st.dataframe(show_df, use_container_width=True, hide_index=True)
 
     st.subheader("気象情報")
-    weather_df = pd.DataFrame([weather])
-    st.dataframe(weather_df[["気温", "天候", "風速", "水温", "波高"]], use_container_width=True, hide_index=True)
+    if weather:
+        weather_df = pd.DataFrame([weather])
+        cols = [c for c in ["気温", "天候", "風速", "水温", "波高"] if c in weather_df.columns]
+        st.dataframe(weather_df[cols], use_container_width=True, hide_index=True)
+    else:
+        st.info("気象情報を取得できませんでした。")
 
     st.subheader("リアルタイムオッズ（3連単・全件）")
-    odds_df = pd.DataFrame([{"買い目": k, "オッズ": v} for k, v in odds_3t.items()]).sort_values("買い目")
-    st.dataframe(odds_df[["買い目", "オッズ"]], use_container_width=True, hide_index=True)
+    if odds_3t:
+        odds_df = pd.DataFrame([{"買い目": k, "オッズ": v} for k, v in odds_3t.items()]).sort_values("買い目")
+        st.dataframe(odds_df[["買い目", "オッズ"]], use_container_width=True, hide_index=True)
+    else:
+        st.info("オッズを取得できませんでした。")
 
 # ------------------------------------------------------------
 # タブ3: 資金配分・結果
